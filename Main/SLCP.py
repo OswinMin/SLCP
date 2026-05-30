@@ -5,6 +5,20 @@ from Predictor import *
 from Tuner import *
 from QuanRegressor import *
 
+def check_order(part1, delta):
+    """
+    delta 保证递减，否则前面较小lambda换给后面较大的
+    在 delta 递减时，part1递增，否则把后面较小的给前面较大的
+    return: idx1, idx2，最终要把 idx1 对应参数给 idx2 继续训练
+    """
+    for idx1 in range(1, len(delta)):
+        for idx2 in range(idx1+1, len(delta)):
+            if (delta[idx2] < delta[idx1]) and (part1[idx2] < part1[idx1]):
+                return idx2, idx1
+            if (delta[idx2] >= delta[idx1]) and (part1[idx2] >= part1[idx1]):
+                return idx1, idx2
+    return None, None
+
 class SLCP:
     def __init__(self, targetAgent:Agent, X:np.ndarray, generator:Generator, predictor:Predictor, tune_layers:list[int]):
         """
@@ -22,19 +36,55 @@ class SLCP:
         self.generate_n = 500
         self.tuner = Tuner(self.generator, tune_layers)
 
+    def load_tuner(self, tuner:Tuner, copy=True, **kwargs):
+        self.tuner = deepcopy(tuner) if copy else tuner
+        self.beta = self.tuner.generate_beta(self.X, kwargs.get('m', 200), kwargs.get('n', 10), kwargs.get('temperature', 10.)).reshape(-1)
+        self.q = np.quantile(self.beta, (1 - kwargs.get('alpha', .1)) * (self.calN + 1) / self.calN, method='higher')
+
+    def tune_lbd_list(self, n=10, epochs:int=100, learning_rate=5e-3, n_grid=50, lbd_list=(0.,), temperature=10., **kwargs):
+        lbd_list = list(lbd_list) if 0. in lbd_list else [0.] + list(lbd_list)
+        lbd_list = sorted(lbd_list)
+        tuner_list, part1, delta = [None] * len(lbd_list), [None] * len(lbd_list), [None] * len(lbd_list)
+        part1[0], delta[0] = self.tuner.tune_marginal(self.targetAgent.getX(), self.targetAgent.getS(), self.X, n, epochs, learning_rate, n_grid, 0., temperature, **kwargs)
+        tuner_list[0] = deepcopy(self.tuner)
+        for i in range(1, len(lbd_list)):
+            tuner = deepcopy(self.tuner)
+            part1[i], delta[i] = tuner.tune_marginal(self.targetAgent.getX(), self.targetAgent.getS(), self.X, n, epochs, learning_rate, n_grid, lbd_list[i], temperature, **kwargs)
+            tuner_list[i] = deepcopy(tuner)
+        idx1, idx2 = check_order(part1, delta)
+        tot = 1
+        while (idx1 is not None) and (tot < 3 * len(lbd_list)):
+            tot += 1
+            tuner_list[idx2] = deepcopy(tuner_list[idx1])
+            part1[idx2], delta[idx2] = tuner_list[idx2].tune_marginal(self.targetAgent.getX(), self.targetAgent.getS(), self.X, n, epochs, learning_rate, n_grid, lbd_list[idx2], temperature, **kwargs)
+            idx1, idx2 = check_order(part1, delta)
+        return tuner_list
+
     def tune(self, n=10, epochs:int=100, learning_rate=5e-3, alpha: float = 0.1, n_grid=50, lbd:float=1., temperature=10., **kwargs):
-        # self.generator.loadMax(0.005, np.max(self.targetAgent.getS()))
-        self.tuner.tune_marginal(self.targetAgent.getX(), self.targetAgent.getS(), self.X, n, epochs, learning_rate, n_grid, lbd, temperature)
-        self.beta = self.generator.cdf(self.X, self.tuner.generaten(self.X, n), self.generate_n).reshape(-1)
+        self.tuner.tune_marginal(self.targetAgent.getX(), self.targetAgent.getS(), self.X, n, epochs, learning_rate, n_grid, lbd, temperature, **kwargs)
+        self.beta = self.tuner.generate_beta(self.X, kwargs.get('m', 200), n, temperature).reshape(-1)
         self.q = np.quantile(self.beta, (1 - alpha)*(self.calN+1)/self.calN, method='higher')
 
     def auto_lbd_tune(self, n=10, epochs:int=100, learning_rate=5e-3, alpha: float = 0.1, n_grid=50, lbd_list=(1.,), temperature=10., gap=1e-2, **kwargs):
-        active_lbd = []
-        level = (1 - alpha)*(self.calN+1)/self.calN
-        upper, lower = np.quantile(self.targetAgent.getS(), level+gap), np.quantile(self.targetAgent.getS(), level-gap)
-        for lbd in lbd_list:
-            tuner = deepcopy(self.tuner)
-            tuner.tune_marginal(self.targetAgent.getX(), self.targetAgent.getS(), self.X, n, epochs, learning_rate, n_grid, lbd, temperature)
+        if kwargs.get('tuner_list', None) is None:
+            tuner_list = self.tune_lbd_list(n, epochs, learning_rate, n_grid, lbd_list, temperature, **kwargs)
+        else:
+            tuner_list = kwargs.get('tuner_list')
+        beta = self.generator.cdf(self.targetAgent.getX(), self.targetAgent.getS(), kwargs.get('m', 200)).reshape(-1)
+        lower, up = np.quantile(beta, (1 - alpha)*(self.calN+1)/self.calN-gap, method='lower'), np.quantile(beta, (1 - alpha)*(self.calN+1)/self.calN+gap, method='higher')
+        q_list, acitive_idx = [], []
+        for idx, tuner in enumerate(tuner_list):
+            q = np.quantile(tuner.generate_beta(self.X, kwargs.get('m', 200), n, temperature).reshape(-1), (1 - alpha)*(self.calN+1)/self.calN, method='higher')
+            q_list.append(q)
+            if lower <= q <= up:
+                acitive_idx.append(idx)
+        if len(acitive_idx) == 0:
+            idx = 0
+        else:
+            idx = acitive_idx[np.argmax(np.array(lbd_list)[acitive_idx])]
+        self.q = q_list[idx]
+        self.tuner = tuner_list[idx]
+        return tuner_list, q_list, idx
 
     def predict(self, testX: np.ndarray, solveScore=defaultSolveScore):
         sq = self.generator.quantile(testX, self.q, self.generate_n)
@@ -59,11 +109,55 @@ class SLCP_SCC:
         self.generate_n = 500
         self.tuner = Tuner(self.generator, tune_layers)
 
-    def tune(self, n=10, epochs:int=100, learning_rate=5e-3, alpha: float = 0.1, n_grid=50, lbd:float=1., temperature=10., **kwargs):
-        # self.generator.loadMax(0.005, np.max(self.targetAgent.getS()))
-        self.tuner.tune_marginal_scc(self.targetAgent.getX(), self.targetAgent.getS(), self.X, self.qrmodel, n, epochs, learning_rate, n_grid, lbd, temperature)
-        self.beta = (self.tuner.generaten(self.X, n) - self.qrmodel.predict(self.X).reshape((-1,1))).reshape(-1)
+    def load_tuner(self, tuner:Tuner, copy=True, **kwargs):
+        self.tuner = deepcopy(tuner) if copy else tuner
+        self.beta = self.tuner.generate_beta_scc(self.X, self.qrmodel, kwargs.get('n', 10)).reshape(-1)
+        self.qhat = np.quantile(self.beta, (1 - kwargs.get('alpha', .1)) * (self.calN + 1) / self.calN, method='higher')
+
+    def tune_lbd_list(self, n=10, epochs:int=100, learning_rate=5e-3, n_grid=50, lbd_list=(0.,), **kwargs):
+        lbd_list = list(lbd_list) if 0. in lbd_list else [0.] + list(lbd_list)
+        lbd_list = sorted(lbd_list)
+        tuner_list, part1, delta = [None] * len(lbd_list), [None] * len(lbd_list), [None] * len(lbd_list)
+        part1[0], delta[0] = self.tuner.tune_marginal_scc(self.targetAgent.getX(), self.targetAgent.getS(), self.X, self.qrmodel, n, epochs, learning_rate, n_grid, 0., **kwargs)
+        tuner_list[0] = deepcopy(self.tuner)
+        for i in range(1, len(lbd_list)):
+            tuner = deepcopy(self.tuner)
+            part1[i], delta[i] = tuner.tune_marginal_scc(self.targetAgent.getX(), self.targetAgent.getS(), self.X, self.qrmodel, n, epochs, learning_rate, n_grid, lbd_list[i], **kwargs)
+            tuner_list[i] = deepcopy(tuner)
+        idx1, idx2 = check_order(part1, delta)
+        tot = 1
+        while (idx1 is not None) and (tot < 3*len(lbd_list)):
+            tot += 1
+            tuner_list[idx2] = deepcopy(tuner_list[idx1])
+            part1[idx2], delta[idx2] = tuner_list[idx2].tune_marginal_scc(self.targetAgent.getX(), self.targetAgent.getS(), self.X, self.qrmodel, n, epochs, learning_rate, n_grid, lbd_list[idx2], **kwargs)
+            idx1, idx2 = check_order(part1, delta)
+        return tuner_list
+
+    def tune(self, n=10, epochs:int=100, learning_rate=5e-3, alpha: float = 0.1, n_grid=50, lbd:float=1., **kwargs):
+        self.tuner.tune_marginal_scc(self.targetAgent.getX(), self.targetAgent.getS(), self.X, self.qrmodel, n, epochs, learning_rate, n_grid, lbd, **kwargs)
+        self.beta = self.tuner.generate_beta_scc(self.X, self.qrmodel, n).reshape(-1)
         self.qhat = np.quantile(self.beta, (1 - alpha)*(self.calN+1)/self.calN, method='higher')
+
+    def auto_lbd_tune(self, n=10, epochs: int = 100, learning_rate=5e-3, alpha: float = 0.1, n_grid=50, lbd_list=(1.,), gap=1e-2, **kwargs):
+        if kwargs.get('tuner_list', None) is None:
+            tuner_list = self.tune_lbd_list(n, epochs, learning_rate, n_grid, lbd_list, **kwargs)
+        else:
+            tuner_list = kwargs.get('tuner_list')
+        beta = self.targetAgent.getS().reshape(-1) - self.qrmodel.predict(self.targetAgent.getX()).reshape(-1)
+        lower, up = np.quantile(beta, (1 - alpha)*(self.calN+1)/self.calN-gap, method='lower'), np.quantile(beta, (1 - alpha)*(self.calN+1)/self.calN+gap, method='higher')
+        qhat_list, acitive_idx = [], []
+        for idx, tuner in enumerate(tuner_list):
+            qhat = np.quantile(tuner.generate_beta_scc(self.X, self.qrmodel, n).reshape(-1), (1 - alpha)*(self.calN+1)/self.calN, method='higher')
+            qhat_list.append(qhat)
+            if lower <= qhat <= up:
+                acitive_idx.append(idx)
+        if len(acitive_idx) == 0:
+            idx = 0
+        else:
+            idx = acitive_idx[np.argmax(np.array(lbd_list)[acitive_idx])]
+        self.qhat = qhat_list[idx]
+        self.tuner = tuner_list[idx]
+        return tuner_list, qhat_list, idx
 
     def predict(self, testX: np.ndarray, solveScore=defaultSolveScore):
         sq = np.maximum(self.qrmodel.predict(testX).reshape(-1) + self.qhat, 0)

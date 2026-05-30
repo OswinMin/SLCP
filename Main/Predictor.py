@@ -48,7 +48,7 @@ class ThreeLayer(nn.Module):
 
 class LReg:
     def __init__(self, **kwargs):
-        self.model = LinearRegression()
+        self.model = LinearRegression(**kwargs)
     def train_(self, X: np.ndarray, Y: np.ndarray, **kwargs):
         self.model.fit(X, Y)
     def predict(self, x:np.ndarray):
@@ -101,7 +101,7 @@ class Predictor:
         if self.method == 'nn':
             self.model = ThreeLayer(**kwargs)
         elif self.method == 'lr':
-            self.model = LReg()
+            self.model = LReg(**kwargs)
         elif self.method == 'rf':
             self.model = SimpleTree(**kwargs)
         elif self.method == 'zero':

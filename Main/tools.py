@@ -139,3 +139,19 @@ class CDF:
         if len(y.shape) == 1:
             y = y.reshape(-1, 1)
         return np.ones((x.shape[0], y.shape[1]))
+
+class ModelWrapper:
+    def __init__(self, model, device="cpu", **kwargs):
+        self.model = model
+        self.kwargs = kwargs
+        self.device = torch.device(device)
+    def predict_img(self, images):
+        return
+    def predict_feat(self, features):
+        return
+    def load(self, filepath):
+        return
+    def save(self, filepath):
+        return
+    def covx(self, images):
+        return

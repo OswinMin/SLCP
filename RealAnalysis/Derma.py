@@ -2,27 +2,21 @@ import copy
 import sys
 import os
 sys.path.append(os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')), 'Main'))
-import numpy as np
-from scipy.optimize import minimize
-import scipy.stats as stats
-from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import KMeans
 from CNNnet import *
 from tools import *
 from procedure import *
 import warnings
-import datetime
-from copy import deepcopy
 import ast
-import itertools
-import pickle
 warnings.filterwarnings('ignore')
 
 if __name__ == '__main__':
     if os.path.split(os.getcwd())[1] != 'RealAnalysis':
         os.chdir(os.path.join(os.getcwd(), 'RealAnalysis'))
 
-    n, m, N, w0, n_grids, lbds, temperatures, isLog = 60, 1000, 2000, 0.035, [50], [0.03], [10.], True
+    n, m, N, w0, n_grids, lbds, temperatures, isLog = 30, 1000, 2000, 0.035, [50], [0., 0.005, 0.01, 0.02, 0.03, 0.04, 0.05], [10.], True
+    if len(sys.argv) > 1:
+        n, m, N, w0, n_grids, lbds, temperatures, isLog = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4]), ast.literal_eval(sys.argv[5]), ast.literal_eval(sys.argv[6]), ast.literal_eval(sys.argv[7]), True
+
     seed, testN = 1, 500
     setseed(seed)
     data = np.load('../Dataset/dermamnist.npz')
@@ -36,8 +30,8 @@ if __name__ == '__main__':
     aux_N = typeCount[1] - np.array(tar_N)
     agent_target, agent_aux = selectTarget(images, labels, tar_N, aux_N)
 
-    epoches, repeats, d, alpha = 200, 30, 10, 0.1
-    hidden_dim, noise_dim = [20, 50, 30, 20], d
+    epoches, repeats, d, alpha = 50, 50, 10, 0.1
+    hidden_dim, noise_dim = [50, 100, 100, 50], d
     in_channels = 3
     trainerMap = MNISTTrainer(
         batch_size=64,
@@ -55,4 +49,4 @@ if __name__ == '__main__':
                'souce data class number':np.array(aux_N),}
     model_path = "Para/DermaMNIST.pth"
 
-    procedure_cls(n_grids, lbds, temperatures, repeats, testN, m, n, N, d, typeNum, hidden_dim, noise_dim, epoches, alpha, agent_target, agent_aux, in_channels=in_channels, seed=seed, Lpath=Lpath, SumLpath=SumLpath, SimRpath=SimRpath, SimName=SimName, isLog=isLog, addDict=addDict, model_path=model_path, predmethod='rf')
+    procedure_cls(n_grids, lbds, temperatures, repeats, testN, m, n, N, d, typeNum, hidden_dim, noise_dim, epoches, alpha, agent_target, agent_aux, tol_gap=2e-2, in_channels=in_channels, seed=seed, Lpath=Lpath, SumLpath=SumLpath, SimRpath=SimRpath, SimName=SimName, isLog=isLog, addDict=addDict, model_path=model_path, cal=2.)

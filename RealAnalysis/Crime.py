@@ -1,19 +1,11 @@
 import sys
 import os
 sys.path.append(os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')), 'Main'))
-import numpy as np
-from scipy.optimize import minimize
-import scipy.stats as stats
-from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import KMeans
 from tools import *
+from sklearn.preprocessing import StandardScaler
 from procedure import *
 import warnings
-import datetime
-from copy import deepcopy
 import ast
-import itertools
-import pickle
 warnings.filterwarnings('ignore')
 
 if __name__ == '__main__':
@@ -38,7 +30,11 @@ if __name__ == '__main__':
     scaler = StandardScaler()
     X_raw = pd.DataFrame(scaler.fit_transform(X_raw), columns=X_raw.columns).values
 
-    n, m, high, features, n_grids, lbds, temperatures, isLog = 60, 500, 0, 15, [50], [0.0075], [10.], True
+    n, m, high, features, n_grids, lbds, temperatures, isLog = 60, 500, 0, 15, [50], [0., 0.001, 0.002, 0.003, 0.004, 0.005, 0.006, 0.007, 0.008, 0.009, 0.01, 0.02], [10.], True
+    if len(sys.argv) > 1:
+        n, m, high, features, n_grids, lbds, temperatures = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), ast.literal_eval(sys.argv[5]), ast.literal_eval(sys.argv[6]), ast.literal_eval(sys.argv[7])
+        isLog = True
+
     seed, testN = 0, 100
     N = X_raw.shape[0] - n - m - testN
     setseed(seed)
@@ -50,8 +46,8 @@ if __name__ == '__main__':
         target_mask = X[:, 0] <= np.quantile(X[:, 0], (n+m+testN)/X.shape[0])
     agent_target, agent_aux = Agent(features, np.sum(target_mask), X[target_mask][:, 1:], y[target_mask]), Agent(features, np.sum(~target_mask), X[~target_mask][:, 1:], y[~target_mask])
 
-    epoches, repeats, alpha = 200, 30, 0.1
-    hidden_dim, noise_dim, d = [20, 50, 30, 20], features, features  # Engression parameters
+    epoches, repeats, alpha = 100, 50, 0.1
+    hidden_dim, noise_dim, d = [50, 100, 100, 50], features, features  # Engression parameters
 
     SimRpath = f"../SimResult/Real_Crime"
     SimName = f"P_{n}_{m}_{N}_{high}_{features}"
@@ -59,4 +55,4 @@ if __name__ == '__main__':
     SumLpath = f"../Log/Real_Crime/Sum_{n}_{m}_{N}_{high}_{features}.txt"
     addDict = {'high':high, 'features':features}
 
-    procedure_reg(n_grids, lbds, temperatures, repeats, testN, m, n, N, d, hidden_dim, noise_dim, epoches, alpha, agent_target, agent_aux, seed=seed, Lpath=Lpath, SumLpath=SumLpath, SimRpath=SimRpath, SimName=SimName, isLog=isLog, addDict=addDict)
+    procedure_reg(n_grids, lbds, temperatures, repeats, testN, m, n, N, d, hidden_dim, noise_dim, epoches, alpha, agent_target, agent_aux, tol_gap=2e-2, seed=seed, Lpath=Lpath, SumLpath=SumLpath, SimRpath=SimRpath, SimName=SimName, isLog=isLog, addDict=addDict, predmethod='rf', comb_aux_tr=True)

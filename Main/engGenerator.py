@@ -5,12 +5,24 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from tools import *
 
+def CvM(u:np.ndarray):
+    n = len(u)
+    u_sorted = np.sort(u)
+    i = np.arange(1, n + 1)
+    cvm_statistic = (1 / (12 * n)) + np.sum((u_sorted - (2 * i - 1) / (2 * n)) ** 2)
+    return cvm_statistic
+
+def Wasserstein(u:np.ndarray):
+    u_sorted = np.sort(u)
+    n = len(u)
+    wass = np.mean(np.abs(u_sorted - (np.arange(n) + 0.5) / n))
+    return wass
+
 class Generator(nn.Module):
-    def __init__(self, inputDim:int, hiddenDim:list[int], restrict:bool=False, randNum:int=1, maxq:float=0.005, maxS=20., **kwargs):
+    def __init__(self, inputDim:int, hiddenDim:list[int], randNum:int=1, **kwargs):
         """
         :param inputDim: int
         :param hiddenDim: list of int
-        :param restrict: if restrict output in [0,1]
         :param randNum: number of epsilon to control
         """
         super(Generator, self).__init__()
@@ -23,46 +35,41 @@ class Generator(nn.Module):
             if i < len(self.layer_sizes) - 2:
                 self.layers.append(nn.LeakyReLU())
         self.model = nn.Sequential(*self.layers)
-        self.S = nn.Sigmoid()
-        self.restrict = restrict
-        self.maxq = maxq
-        self.maxS = maxS
-
-    def loadMax(self, maxq:float=0.005, maxS=20.):
-        self.maxq = maxq
-        self.maxS = maxS
+        self.noise_scalar = 1.
 
     def forward(self, xep:torch.Tensor):
         """
-        :param xep: n*inputDim+1
+        :param xep: n*(inputDim+randNum)
         :return: n*1
         """
         xep = self.model(xep)
-        if self.restrict:
-            xep = self.S(xep)
         return xep
 
     def predict(self, xep:np.ndarray):
         """
-        :param xep: n*inputDim+1
+        :param xep: n*(inputDim+randNum)
         :return: n*1 np.ndarray
         """
         return self.forward(torch.tensor(xep).float()).detach().numpy()
 
-    def generaten(self, x:np.ndarray, n:int=1):
+    def generaten(self, x:np.ndarray, n:int=1, seed=0):
         """
         :param x: d or 1*d or m*d
         :param n:
         :return: m * n
         """
-        if len(x.shape) == 1:
-            x = x.reshape((-1, self.inputDim))
+        x = x.reshape((-1, self.inputDim))
         m = x.shape[0]
-        ep = np.random.normal(0, 1, (n*x.shape[0],self.randNum))
+        original_state = np.random.get_state()
+        try:
+            np.random.seed(seed)
+            ep = np.random.normal(0, 1, (n*x.shape[0],self.randNum)) * self.noise_scalar
+        finally:
+            np.random.set_state(original_state)
         xep = np.concatenate([x.repeat(n, 0), ep], axis=1)
         return self.predict(xep).reshape((m, n))
 
-    def trainEng(self, X:np.ndarray, Y:np.ndarray, m:int=100, batch_size:int=32, epochs:int=100, learning_rate:float=0.01, isLog=False, path='', log=None, mute=True, expand_kwargs=None):
+    def trainEng(self, X:np.ndarray, Y:np.ndarray, m:int=100, batch_size:int=32, epochs:int=100, learning_rate:float=0.01, isLog=False, path='', log=None, mute=True, **kwargs):
         """
         Use X, Y train a simple predictor
         :param X: n*inputDim
@@ -80,31 +87,9 @@ class Generator(nn.Module):
         optimizer = optim.Adam(self.parameters(), lr=learning_rate)
 
         self.__inner_train(dataloader, optimizer, epochs, m, isLog, path, log, mute)
-        if expand_kwargs is not None:
-            # ratio : number of sythetic samples to expand
-            # sided : 0 only lower; 1 only upper; 2 two sided
-            ratio, sided, expand_ratio = expand_kwargs['ratio'], expand_kwargs['sided'], expand_kwargs['expand_ratio']
-            ratioN = int(X.shape[0] * ratio)
-            if sided == 2:
-                ratioN = ratioN // 2
-            idx = np.random.choice(X.shape[0], size=ratioN, replace=True)
-            X_ = X[idx]     # ratioN * inputDim
-            Y_ = self.generaten(X_, m)      # ratioN * m
-            Y_range = np.concatenate([np.max(Y_, axis=1, keepdims=True), np.min(Y_, axis=1, keepdims=True)], axis=1)
-            Y_up = (Y_range[:, 0] + expand_ratio * (Y_range[:, 0] - Y_range[:, 1])).reshape((-1,1))
-            Y_low = (Y_range[:, 1] - expand_ratio * (Y_range[:, 0] - Y_range[:, 1])).reshape((-1,1))
-            if sided != 2:
-                X = np.concatenate([X, X_], axis=0)
-                if sided == 0:
-                    Y = np.concatenate([Y, Y_low], axis=0)
-                else:
-                    Y = np.concatenate([Y, Y_up], axis=0)
-            else:
-                X = np.concatenate([X, X_, X_], axis=0)
-                Y = np.concatenate([Y, Y_low, Y_up], axis=0)
-            self.trainEng(X, Y, m, batch_size, epochs, learning_rate, isLog, path, log, mute, expand_kwargs=None)
+        # self.cal_scalar(X, Y, m, kwargs.get('seed', 0), stat_type=kwargs.get('stat_type', 'CvM'))
 
-    def __inner_train(self, dataloader, optimizer, epochs, m, isLog=False, path='', log=None, mute=True):
+    def __inner_train(self, dataloader, optimizer, epochs, m, isLog=False, path='', log=None, mute=True, **kwargs):
         for epoch in range(epochs):
             ttloss = 0
             ttloss1 = 0
@@ -131,7 +116,22 @@ class Generator(nn.Module):
                 if epoch % (epochs//10) == max((epochs//10) - 1,1):
                     log(f'Epoch [{epoch + 1}/{epochs}], Loss: {ttloss/t:.4f}, Error: {ttloss1/t:.4f}, Gain: {ttgain1/t*2:.4f}', path, isLog)
 
-    def cdf(self, X:np.ndarray, Y:np.ndarray, m:int=100):
+    def cal_scalar(self, X:np.ndarray, Y:np.ndarray, m:int=100, seed=0, stat_type='CvM'):
+        stat_fun = CvM if stat_type == 'CvM' else Wasserstein
+        def fun(scalar):
+            self.noise_scalar = scalar[0]
+            state = np.random.get_state()
+            try:
+                np.random.seed(seed)
+                marginal_cdf = self.cdf(X, Y, m).reshape(-1)
+            finally:
+                np.random.set_state(state)
+            return stat_fun(marginal_cdf)
+        from scipy.optimize import minimize
+        res = minimize(fun, np.array([1.0]), bounds=[(0.1, 10)], method='Nelder-Mead')
+        self.noise_scalar = res.x[0]
+
+    def cdf(self, X:np.ndarray, Y:np.ndarray, m:int=100, **kwargs):
         """
         :param X: n * inputDim
         :param Y: n * 1 or n * k
@@ -139,25 +139,13 @@ class Generator(nn.Module):
         :return: P(Y<=y|X=x) with shape same as Y
         """
         ydim = len(Y.shape)
-        if len(Y.shape) == 1:
-            Y = Y.reshape((-1, 1))
-        if len(X.shape) == 1:
-            X = X.reshape((-1, self.inputDim))
-        w = np.random.uniform(0, self.maxq, (X.shape[0], 1))    # n * 1
-        preds = self.generaten(X, m)    # n * m
-        weight = np.ones_like(preds)    # n * m
-        weight = weight / m * (1 - w)   # n * m
-        # n * (m+1)
-        preds = np.concatenate((preds, np.ones((X.shape[0],1))*self.maxS), axis=1)
-        # n * (m+1)
-        weight = np.concatenate((weight, w), axis=1)
+        X = X.reshape((-1, self.inputDim))
+        Y = Y.reshape((-1, 1)) if len(Y.shape) == 1 else Y              # n * 1
+        preds = self.generaten(X, m)                                    # n * m
         cdf = np.zeros_like(Y)
         for i in range(Y.shape[1]):
-            cdf[:, i] = (weight * (preds <= Y[:, [i]])).sum(-1)
-        if ydim == 1:
-            return cdf.reshape(-1)
-        else:
-            return cdf
+            cdf[:, i] = (preds <= Y[:, i].reshape((-1, 1))).mean(-1)    # n * 1
+        return cdf.reshape(-1) if ydim == 1 else cdf
 
     def quantile(self, X:np.ndarray, q:float=.9, m:int=100, **kwargs):
         """
@@ -166,17 +154,9 @@ class Generator(nn.Module):
         :param m: number of epsilons generated for each X
         :return: Q(q|X=x) of shape (n,)
         """
-        if len(X.shape) == 1:
-            X = X.reshape((-1, self.inputDim))
-        w = np.random.uniform(0, self.maxq, (X.shape[0], 1))    # n * 1
+        X = X.reshape((-1, self.inputDim))
         preds = self.generaten(X, m)    # n * m
-        weight = np.ones_like(preds)    # n * m
-        weight = weight / m * (1 - w)   # n * m
-        # n * (m+1)
-        preds = np.concatenate((preds, np.ones((X.shape[0], 1)) * self.maxS), axis=1)
-        # n * (m+1)
-        weight = np.concatenate((weight, w), axis=1)
-        qhat = empiricalQuantile(preds, weight, q)
+        qhat = np.quantile(preds, q, axis=-1, method='higher')
         return qhat.reshape(-1)
 
 if __name__ == '__main__':
@@ -184,38 +164,13 @@ if __name__ == '__main__':
     import scipy.stats as ss
     np.random.seed(1)
     torch.manual_seed(1)
-    X = np.random.uniform(-4, 4, 2000)
-    Y = X + np.cos(X) * np.random.normal(0, 1, 2000)
-    plt.scatter(X, Y, s=1)
-    plt.show()
+    X = np.random.uniform(-4, 4, (50, 5))
+    Y = X.sum(-1) + np.cos(X[:, 0]) * np.random.normal(0, 1, 50)
 
     np.random.seed(1)
     torch.manual_seed(1)
-    X = np.random.uniform(-4, 4, 200)
-    Y = X + np.cos(X) * np.random.normal(0, 1, 200)
-
-    np.random.seed(1)
-    torch.manual_seed(1)
-    generator = Generator(1, [20, 50, 20], restrict=False, randNum=3)
-    generator.trainEng(X.reshape((-1, 1)), Y.reshape((-1, 1)), m=10, batch_size=32, epochs=600, log=log, mute=False)
-    X_ = np.repeat(X, 5, axis=0)
-    yhat = generator.generaten(X.reshape((-1, 1)), 5)
-    plt.scatter(X_, yhat, s=1)
-    plt.show()
-
-    np.random.seed(1)
-    torch.manual_seed(1)
-    generator = Generator(1, [20, 50, 20], restrict=False, randNum=3)
-    generator.trainEng(X.reshape((-1,1)), Y.reshape((-1,1)), m=10, batch_size=32, epochs=300, log=log, mute=False, expand_kwargs={'ratio':0.1, 'sided':2, 'expand_ratio':0.1})
-    X_ = np.repeat(X, 5, axis=0)
-    yhat = generator.generaten(X.reshape((-1,1)), 5)
-    plt.scatter(X_, yhat, s=1)
-    plt.show()
+    generator = Generator(5, [20, 50, 20], randNum=5)
+    generator.trainEng(X.reshape((-1, 5)), Y.reshape((-1, 1)), m=10, batch_size=32, epochs=100, log=log, mute=False, seed=10, stat_type='CvM')
 
     cdf = generator.cdf(X, Y, 100)
-    trueCDF = ss.norm.cdf((Y-X)/np.abs(np.cos(X)))
-    print(f"{np.abs(cdf-trueCDF).mean():.4f}")
-
-    quantiles = generator.quantile(X, 0.9, 100)
-    cdfQ = ss.norm.cdf((quantiles-X)/np.abs(np.cos(X)))
-    print(f"{np.abs(cdfQ-0.9).mean():.4f}")
+    print(CvM(cdf), generator.noise_scalar)

@@ -1,19 +1,10 @@
 import sys
 import os
 sys.path.append(os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')), 'Main'))
-import numpy as np
-from scipy.optimize import minimize
-import scipy.stats as stats
-from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import KMeans
 from tools import *
 from procedure import *
 import warnings
-import datetime
-from copy import deepcopy
 import ast
-import itertools
-import pickle
 warnings.filterwarnings('ignore')
 
 def defaultSolveScore(x, s, predictor):
@@ -34,9 +25,18 @@ def defaultSolveScore(x, s, predictor):
         return np.clip(cs, 0., 136.), np.zeros(cs.shape[0])
 
 if __name__ == '__main__':
+    """
+    Split agent using school location
+    Target: 3*3 choices (g1,2,3 school location rural, suburban or (inner city or urban))
+    Rest data serve as auxiliary agent
+    use all covariates by kmeans to split the support of X to calculate conditional coverage
+    """
     if os.path.split(os.getcwd())[1] != 'RealAnalysis':
         os.chdir(os.path.join(os.getcwd(), 'RealAnalysis'))
-    n, m, features, targ_g, targ_ind, n_grids, lbds, temperatures, isLog = 60, 500, 15, 2, 2, [50], [0.002, 0.1], [10.], True
+    n, features, targ_g, targ_ind, n_grids, lbds, temperatures, isLog = 60, 15, 2, 2, [50], [0., 0.002, 0.005, 0.0075, 0.01, 0.02, 0.05, 0.075, 0.1, 0.12, 0.15], [10.], True
+    if len(sys.argv) > 1:
+        n, features, targ_g, targ_ind, n_grids, lbds, temperatures, isLog = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), ast.literal_eval(sys.argv[5]), ast.literal_eval(sys.argv[6]), ast.literal_eval(sys.argv[7]), True
+
     # noinspection PyTypeChecker
     achievedata = pd.read_spss("../Dataset/achievementRatio/STAR_Students.sav")
     achievedata = achievedata[~achievedata['hsacttot'].isna()]
@@ -88,13 +88,12 @@ if __name__ == '__main__':
     importance = [np.abs(np.corrcoef(X_raw[:,i], y)[0,1]) for i in range(X_raw.shape[1])]
     importance_indice = np.argsort(importance)[::-1]
     X = (X_raw[:, importance_indice[:features]])
-    # raise KeyError
 
     agent_target, agent_aux = Agent(features, np.sum(target_mask), X[target_mask], y[target_mask]), Agent(features, np.sum(~target_mask), X[~target_mask], y[~target_mask])
     seed, testN = 0, 200
-    d, N = features, agent_aux.n
-    epoches, repeats, alpha = 300, 30, 0.1
-    hidden_dim, noise_dim = [20, 50, 30, 20], d  # Engression parameters
+    d, N, m = features, agent_aux.n, agent_target.n-n-testN,
+    epoches, repeats, alpha = 100, 50, 0.1
+    hidden_dim, noise_dim = [50, 100, 100, 50], d  # Engression parameters
 
     SimRpath = f"../SimResult/Real_Star"
     SimName = f"P_{n}_{m}_{N}_{features}_{targ_g}_{targ_ind}"
@@ -102,4 +101,4 @@ if __name__ == '__main__':
     SumLpath = f"../Log/Real_Star/Sum_{n}_{m}_{N}_{features}_{targ_g}_{targ_ind}.txt"
     addDict = {'features': features, 'targ_g': targ_g, 'targ_ind': targ_ind}
 
-    procedure_reg(n_grids, lbds, temperatures, repeats, testN, m, n, N, d, hidden_dim, noise_dim, epoches, alpha, agent_target, agent_aux, defaultSolveScore=defaultSolveScore, predmethod='rf', seed=seed, Lpath=Lpath, SumLpath=SumLpath, SimRpath=SimRpath, SimName=SimName, isLog=isLog, addDict=addDict, comb_aux_tr=True)
+    procedure_reg(n_grids, lbds, temperatures, repeats, testN, m, n, N, d, hidden_dim, noise_dim, epoches, alpha, agent_target, agent_aux, tol_gap=2e-2, defaultSolveScore=defaultSolveScore, seed=seed, Lpath=Lpath, SumLpath=SumLpath, SimRpath=SimRpath, SimName=SimName, isLog=isLog, addDict=addDict, comb_aux_tr=True, predmethod='rf')
